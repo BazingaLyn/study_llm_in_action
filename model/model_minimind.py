@@ -1,7 +1,3 @@
-# 📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘
-#                                             MiniMind Config
-# 📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘
-
 from transformers import PretrainedConfig
 
 
@@ -67,9 +63,6 @@ class MiniMindConfig(PretrainedConfig):
         self.norm_topk_prob = norm_topk_prob  # 是否标准化top-k概率
 
 
-# 📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘
-#                                             MiniMind Model
-# 📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘📘
 
 import math
 import torch
@@ -380,6 +373,8 @@ class MiniMindModel(nn.Module):
                 use_cache: bool = False,
                 **kwargs):
         batch_size, seq_length = input_ids.shape
+        if past_key_values is not None:
+            print("INFO: past_key_values is not null in MiniMindModel.")
         past_key_values = past_key_values or [None] * len(self.layers)
         start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
 
@@ -413,6 +408,14 @@ class MiniMindModel(nn.Module):
 
 
 class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
+    """
+    通过继承 PreTrainedModel ， MiniMindForCausalLM 可以无缝集成到 Hugging Face 生态系统中，
+    使用标准的 from_pretrained() 和 save_pretrained() 方法加载和保存模型。
+    通过继承 GenerationMixin ，模型获得了强大的文本生成能力，无需重新实现复杂的生成逻辑。
+    此外，通过继承 GenerationMixin ，模型还可以使用标准的 generate() 方法生成文本，
+    无需重新实现复杂的生成逻辑。
+    
+    """
     config_class = MiniMindConfig
 
     def __init__(self, config: MiniMindConfig = None):
@@ -439,8 +442,55 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
         )
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(h[:, slice_indices, :])
+        # [batch_size, seq_len, hidden_size]
         self.OUT.__setitem__('last_hidden_state', h)
+        # [batch_size, seq_len, vocab_size]
         self.OUT.__setitem__('logits', logits)
+        # 1. 辅助损失，在使用 MoE（混合专家）模型时训练时使用
         self.OUT.__setitem__('aux_loss', aux_loss)
         self.OUT.__setitem__('past_key_values', past_kvs)
         return self.OUT
+
+
+if __name__ == "__main__":
+    
+    # 如果有 CUDA 设备，则使用 GPU
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.set_default_device(device)
+    
+    # 设置随机种子以确保结果可重现
+    torch.manual_seed(0)
+    
+    # 创建模型配置
+    config = MiniMindConfig(
+        hidden_size=512,
+        num_hidden_layers=4,  # 使用较少的层以加快测试速度
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        vocab_size=6400,
+        max_position_embeddings=2048,
+        use_moe=True,  # 启用混合专家模型
+        n_routed_experts=4,
+        num_experts_per_tok=2
+    )
+    
+    # 创建随机输入数据
+    batch_size = 2
+    seq_len = 1280
+    x = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    
+    # 初始化模型
+    model = MiniMindForCausalLM(config)
+    
+    # 打印模型参数量
+    param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"模型参数量: {param_count:,}")
+    
+    # 执行前向传播
+    with torch.no_grad():
+        outputs = model(input_ids=x)
+    
+    # 打印输出尺寸
+    print(f"输入形状: {x.shape}")
+    print(f"隐藏状态输出形状: {outputs.last_hidden_state.shape}")
+    print(f"logits输出形状: {outputs.logits.shape}")

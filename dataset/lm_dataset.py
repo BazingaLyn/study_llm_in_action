@@ -34,7 +34,11 @@ class PretrainDataset(Dataset):
     def __getitem__(self, index):
         sample = self.samples[index]
 
-        # 构建输入文本
+        # 使用 tokenizer 对样本中的 'text' 字段进行编码
+        # max_length: 限制最大长度为 self.max_length
+        # padding='max_length': 将所有序列填充到 max_length 长度
+        # truncation=True: 如果序列超过 max_length，则截断
+        # return_tensors='pt': 返回 PyTorch 张量格式的结果
         encoding = self.tokenizer(
             str(sample['text']),
             max_length=self.max_length,
@@ -42,10 +46,15 @@ class PretrainDataset(Dataset):
             truncation=True,
             return_tensors='pt'
         )
+         # 创建损失掩码，标记非填充位置为 True，填充位置为 False
+        # 这样在计算损失时可以忽略填充位置
         input_ids = encoding.input_ids.squeeze()
         loss_mask = (input_ids != self.tokenizer.pad_token_id)
-
+        # 输入序列 X 是 input_ids 去掉最后一个 token
+        # 这是因为在自回归语言模型中，我们用前 n-1 个 token 预测后 n-1 个 token
         X = torch.tensor(input_ids[:-1], dtype=torch.long)
+        # 目标序列 Y 是 input_ids 去掉第一个 token
+        # 这样 X[i] 对应的预测目标就是 Y[i]，即下一个 token
         Y = torch.tensor(input_ids[1:], dtype=torch.long)
         loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
         return X, Y, loss_mask

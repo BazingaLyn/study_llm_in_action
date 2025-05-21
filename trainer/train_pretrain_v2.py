@@ -132,9 +132,9 @@ def init_model(lm_config):
     model = MiniMindForCausalLM(lm_config).to(args.device)
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     # 只对内部的MiniMindModel进行编译，而不是整个MiniMindForCausalLM
-    # if hasattr(torch, 'compile') and torch.__version__ >= '2.0.0':
-    #     Logger("仅对MiniMindModel进行torch.compile加速")
-    #     model.model = torch.compile(model.model)
+    if args.use_torch_compile and hasattr(torch, 'compile') and torch.__version__ >= '2.0.0':
+        Logger("仅对MiniMindModel进行torch.compile加速")
+        model.model = torch.compile(model.model)
     return model, tokenizer
 
 
@@ -174,11 +174,13 @@ if __name__ == "__main__":
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=512, type=int)
     parser.add_argument('--use_moe', default=False, type=bool)
+    parser.add_argument("--use_torch_compile", default=False, type=bool)
+    parser.add_argument("--use_flash_attn", default=False, type=bool)
     parser.add_argument("--data_path", type=str, default="../dataset/pretrain_hq.jsonl")
     args = parser.parse_args()
 
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,
-                               use_moe=args.use_moe, flash_attn=False)
+                               use_moe=args.use_moe, flash_attn=args.use_flash_attn)
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
@@ -187,7 +189,7 @@ if __name__ == "__main__":
 
     args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
 
-    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast()
+    ctx = nullcontext() if device_type == "cpu" else torch.amp.autocast('cuda')
 
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
     ddp_local_rank, DEVICE = 0, "cuda:0"
@@ -224,7 +226,7 @@ if __name__ == "__main__":
         sampler=train_sampler
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype in ['float16', 'bfloat16']))
+    scaler = torch.amp.GradScaler('cuda',enabled=(args.dtype in ['float16', 'bfloat16']))
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
     if ddp:
