@@ -83,13 +83,42 @@ class PretrainDataset(Dataset):
 
 step3: 训练模型
 
+默认模型已经自带了tokenizer了，使用BPE算法，对预训练的语料`pretrain_hq.jsonl`进行统计分词，默认分词是6400个，所以我们可以直接进行训练。
+
+```shell
+cd trainer
+python train_pretrain_v2.py --epochs 2
+```
+
+训练的日志如下所示，可以看到如果使用原始的语料，进行训练的情况下，训练完一个epoch大概是需要2个小时，我们训练2个epoch大概需要4个小时的时间。模型训练的flops大概是8w tokens/s,训练完	
+
+![image-20250521194807054](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521194807054.png)
+
 step4: 模型测试
+
+我们在训练完成2个epoch之后，我们可以使用eval_model_v2.py来对模型进行一个简单的推理测试，查看只训练2个epoch之后，对1.5G
+
+![image-20250522093831424](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250522093831424.png)
 
 step5: 训练加速
 
 - flash attention 对模型的加速
+
+- ![image-20250521200052607](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521200052607.png)
+
 - torch.compile 对模型的加速
+
+  ```
+  cd trainer
+  
+  # 在
+  python train_pretrain_v2.py --epochs 2 --use_torch_compile True
+  ```
+
+  ![image-20250521195323565](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521195323565.png)
+
 - 单机多卡训练
+
 - 多机多卡训练
 
 
