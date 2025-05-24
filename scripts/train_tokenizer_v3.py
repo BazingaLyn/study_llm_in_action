@@ -23,7 +23,7 @@ random.seed(42)
 
 def train_tokenizer():
     # 读取JSONL文件并提取文本数据，使用批处理方式
-    def read_texts_from_jsonl_batched(file_path, batch_size=100000):
+    def read_texts_from_jsonl_batched(file_path, batch_size=10000):
         batch = []
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
