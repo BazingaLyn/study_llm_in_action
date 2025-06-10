@@ -36,7 +36,6 @@ def generate_response(query):
     outputs = model.generate(inputs, max_length=100, temperature=0.7, do_sample=True)
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-
 query = "什么是机器学习？"
 response = generate_response(query)
 print(f"问题: {query}")
