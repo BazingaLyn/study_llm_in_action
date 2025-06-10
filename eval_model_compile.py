@@ -14,8 +14,8 @@ def init_model(args):
     if args.load == 0:
         moe_path = '_moe' if args.use_moe else ''
         modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf', 3: 'reason', 4: 'grpo'}
-        ckp = f'./{args.out_dir}/{modes[args.model_mode]}_{args.num_hidden_layers}_{args.hidden_size}{moe_path}_1.pth'
-        print(f'load checkpoint name is {ckp}')
+        ckp = f'./{args.out_dir}/{modes[args.model_mode]}_{args.num_hidden_layers}_{args.hidden_size}{moe_path}_{args.eval_use_epoch}.pth'
+        print(f'load model checkpoint is {ckp}')
 
         model = MiniMindForCausalLM(MiniMindConfig(
             hidden_size=args.hidden_size,
@@ -23,7 +23,7 @@ def init_model(args):
             use_moe=args.use_moe
         ))
 
-        if hasattr(torch, 'compile') and torch.__version__ >= '2.0.0':
+        if args.use_torch_compile and hasattr(torch, 'compile') and torch.__version__ >= '2.0.0':
             print("仅对MiniMindModel进行torch.compile加速")
             model.model = torch.compile(model.model)
 
@@ -116,10 +116,12 @@ def main():
     parser.add_argument('--num_hidden_layers', default=8, type=int)
     parser.add_argument('--max_seq_len', default=8192, type=int)
     parser.add_argument('--use_moe', default=False, type=bool)
+    parser.add_argument('--use_torch_compile', default=False, type=bool)
     # 携带历史对话上下文条数
     # history_cnt需要设为偶数，即【用户问题, 模型回答】为1组；设置为0时，即当前query不携带历史上文
     # 模型未经过外推微调时，在更长的上下文的chat_template时难免出现性能的明显退化，因此需要注意此处设置
     parser.add_argument('--history_cnt', default=0, type=int)
+    parser.add_argument('--eval_use_epoch', default=0, type=int)
     parser.add_argument('--load', default=0, type=int, help="0: 原生torch权重，1: transformers加载")
     parser.add_argument('--model_mode', default=1, type=int,
                         help="0: 预训练模型，1: SFT-Chat模型，2: RLHF-Chat模型，3: Reason模型，4: RLAIF-Chat模型")
@@ -129,7 +131,6 @@ def main():
 
     prompts = get_prompt_datas(args)
     test_mode = int(input('[0] 自动测试\n[1] 手动输入\n'))
-    print(f"use device {args.device}")
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
     messages = []

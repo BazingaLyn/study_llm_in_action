@@ -1,133 +1,53 @@
+#### 
+
+
+
+
+
+### 介绍
+
 ### 模型结构
-TODO
+
+#### Attention
+
+#### MoE
+
+#### Rope
+
+#### MLA
+
+#### MTP
+
+### Tokenizer
 
 
 
 ### 模型预训练
 
-step1: 下载预训练的数据
+1.预训练语料准备
 
-默认情况下，是使用modelscope从魔搭社区社区上下载训练的语料，所以首先先要安装modescope
-
-```shell
-pip install modelscope
-
-modelscope download --dataset gongjy/minimind_dataset pretrain_hq.jsonl --local_dir ./dataset
-```
-
-step2: 观测数据
-
-①.在预训练之前，我们首先对原始数据有一个基本的了解，并且对其做一个基础的信息统计，可以运行tests文件夹下的dataset_test.ipynb
-
-![image-20250520103523431](images/image-20250520103523431.png)
-
-![image-20250520103559483](images/image-20250520103559483.png)
-
-从数据统计中，可以看出预训练的语料只有140w行数据，并且每一行的语料平均字数只有400左右，说明语料确实经过筛选和过滤。这能够帮助小模型快速找到参数所在的空间，同时参数量较小的模型的表达能力是有限的，更适合学习数据中的简单规律，从这里分析可以看出使用小语料进行小模型的训练还是不错的。
-
-②.在实际训练阶段，常规使用PyTorch进行训练的时候，会使用Dataset和DataLoader来读取和封装数据，喂给模型进行训练。
-
-```python
-class PretrainDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_length=512):
-        super().__init__()
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.samples = self.load_data(data_path)
-
-    def load_data(self, path):
-        samples = []
-        with open(path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                data = json.loads(line.strip())
-                samples.append(data)
-        return samples
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, index):
-        sample = self.samples[index]
-
-        # 使用 tokenizer 对样本中的 'text' 字段进行编码
-        # max_length: 限制最大长度为 self.max_length
-        # padding='max_length': 将所有序列填充到 max_length 长度
-        # truncation=True: 如果序列超过 max_length，则截断
-        # return_tensors='pt': 返回 PyTorch 张量格式的结果
-        encoding = self.tokenizer(
-            str(sample['text']),
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-         # 创建损失掩码，标记非填充位置为 True，填充位置为 False
-        # 这样在计算损失时可以忽略填充位置
-        input_ids = encoding.input_ids.squeeze()
-        loss_mask = (input_ids != self.tokenizer.pad_token_id)
-        # 输入序列 X 是 input_ids 去掉最后一个 token
-        # 这是因为在自回归语言模型中，我们用前 n-1 个 token 预测后 n-1 个 token
-        X = torch.tensor(input_ids[:-1], dtype=torch.long)
-        # 目标序列 Y 是 input_ids 去掉第一个 token
-        # 这样 X[i] 对应的预测目标就是 Y[i]，即下一个 token
-        Y = torch.tensor(input_ids[1:], dtype=torch.long)
-        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
-        return X, Y, loss_mask
-```
-
-自回归语言模型原理 (加载原始文本 → 分词编码 → 截断/填充 → 创建输入-目标对 → 生成损失掩码)：
-
-- 自回归语言模型的核心思想是使用前面的 token 序列预测下一个 token
-- 通过将输入序列错位一位，创建输入-目标对： [t₁, t₂, ..., tₙ₋₁] → [t₂, t₃, ..., tₙ]
-- 损失掩码用于在计算损失时忽略填充位置，只对实际内容计算损失，避免模型学习预测填充符的无意义任务
-
-step3: 训练模型
-
-默认模型已经自带了tokenizer了，使用BPE算法，对预训练的语料`pretrain_hq.jsonl`进行统计分词，默认分词是6400个，所以我们可以直接进行训练。
-
-```shell
-cd trainer
-python train_pretrain_v2.py --epochs 2
-```
-
-训练的日志如下所示，可以看到如果使用原始的语料，进行训练的情况下，训练完一个epoch大概是需要2个小时，我们训练2个epoch大概需要4个小时的时间。模型训练的flops大概是8w tokens/s,训练完	
-
-![image-20250521194807054](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521194807054.png)
-
-step4: 模型测试
-
-我们在训练完成2个epoch之后，我们可以使用eval_model_v2.py来对模型进行一个简单的推理测试，查看只训练2个epoch之后，对1.5G
-
-![image-20250522093831424](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250522093831424.png)
-
-step5: 训练加速
-
-- flash attention 对模型的加速
-
-- ![image-20250521200052607](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521200052607.png)
-
-- torch.compile 对模型的加速
-
-  ```
-  cd trainer
-  
-  # 在
-  python train_pretrain_v2.py --epochs 2 --use_torch_compile True
-  ```
-
-  ![image-20250521195323565](E:\workspace\study_llm_in_action\study_llm_in_action\images\README\image-20250521195323565.png)
-
-- 单机多卡训练
-
-- 多机多卡训练
+minimind训练语料是从sft训练语料中进行处理提取的，并且jsonl中的每一个训练语料的长度均小于512（**注意后续自己制作数据集的时候，这个地方很重要，一定要控制最长的json的长度，如果很多的训练语料都超过了max_seq_length的时候，会导致在做dataset时候被截断，会导致模型一致学不到东西**)
 
 
 
-wandb的使用
+todo 我是如何准备语料的
 
 
 
-训练扩展1: 使用更大的参数规模训练小的语料。
+
+
+2.训练的时候遇到的实际问题
+
+复读机问题
+
+- 预训练的语料有很大的比例超过了max_seq_length
+- 预训练的质量较低，没有进行很好的清洗，导致在很少的flops中模型学不到东西。
+- 训练的flops不够，可以增加epochs训练
+- model.generate中temperature的值较低。
+
+如果我们只是训练一个小的模型，训练的语料只有几十个G左右，这种情况下，最好的解决模型推理期间出现复读机的问题，还是去增加你的清洗规则，提升你训练语料的质量，这种情况下，在训练不到1/4 epoch的时候，模型就已经初步具有回答问题的能力，不会出现大量复读的问题。
+
+
 
 
 
@@ -139,7 +59,6 @@ wandb的使用
 > | global_batch_size |  1024  | batch_size * K(梯度累计的步数) * GPU<br />G过大：直接导致每轮epoch的迭代次数变少，训练步数变少，在多轮epoch上不停地训练可能会过拟合该训练数据集<br />G过小：直接导致每轮epoch的迭代次数变多，训练步数变多，每次反向传播的时候噪声较多，训练不稳定，模型收敛慢。 |
 > |                   |        |                                                              |
 >
-> 
 
 
 
@@ -149,22 +68,104 @@ wandb的使用
 
 2.在SFT阶段引入新知识容易增加模型的产生幻觉的可能。模型主要是通过预训练阶段引入新的知识，而SFT的作用是教会模型如何高效正确地利用这些数据
 
-SFT与预训练的一个显著区别就是两者的Loss计算规则不一样
+SFT与预训练的一个显著区别就是两者的Loss计算规则不一样。
+
+#### SFT数据集
 
 
 
 
 
-### DPO
+### DPO(Direct Preference Optimization 直接偏好对齐)
+
+#### 基本原理
+
+大模型（如 ChatGPT）训练完后，可能输出 **不符合人类偏好** 的内容，比如：
+
+- 答案冗长啰嗦 😤
+- 包含错误或偏见 ❌
+- 忽略关键问题 🙅
+
+传统方法 **RLHF**（基于人类反馈的强化学习）能对齐偏好，但流程复杂：
+
+1. 需额外训练一个 **奖励模型**（Reward Model）打分；
+2. 再用强化学习（如 PPO）微调模型，过程不稳定且计算成本高。
+
+👉 **DPO 的目标**：**跳过奖励模型**，直接用偏好数据微调模型，**更加简单高效地进行训练**！
 
 
 
+### RL（强化学习）
 
+策略迭代算法 VS 价值迭代算法
 
+#### **一、策略迭代算法（Policy Iteration）**
 
+**核心思想**：通过交替进行 **策略评估（Policy Evaluation）** 和 **策略改进（Policy Improvement）**，逐步优化策略直至收敛到最优策略
 
+**适用场景**：状态空间较小的问题（如棋盘游戏、简单机器人控制）。
 
+**具体步骤**：
 
+1. **策略评估（Policy Evaluation）**
 
+   - 固定当前策略 πk，通过贝尔曼方程迭代计算其状态价值函数 Vπk(s)：
+
+     ![image-20250607110044712](images\README\image-20250607110044712.png)
+
+   - 重复计算直至 V(s) 收敛（误差小于阈值）。
+
+2. **策略改进（Policy Improvement）**
+
+   - 基于当前 V(s)，对每个状态选择最大化动作价值 Q(s,a) 的动作：
+
+     ![image-20250607110147283](images\README\image-20250607110147283.png)
+
+   - 新策略 πk+1 是**贪婪策略**（只选当前最优动作）。
+
+3. **循环迭代**：重复评估与改进，直到策略不再变化（πk+1=πk）。
+
+**特点**：
+
+- ✅ **优点**：策略序列单调改进，收敛稳定；
+- ❌ **缺点**：策略评估需完全收敛，计算成本高（尤其大规模状态空间）。
+
+#### **二、价值迭代算法（Value Iteration）**
+
+**核心思想**：跳过显式策略，**直接优化状态价值函数 V(s)**，通过贝尔曼最优方程一步合并策略评估与改进
+
+**适用场景**：大规模状态空间问题（如复杂路径规划）。
+
+具体步骤：
+
+1. **价值更新（Value Update）**
+
+   - 直接迭代更新状态价值至最优值 V∗(s)：
+
+     ![image-20250607110512862](images\README\image-20250607110512862.png)
+
+   - 无需等待策略评估收敛，每次更新即隐含策略改进。
+
+2. **策略提取（Policy Extraction）**
+
+   - 收敛后，通过最优价值函数导出最优策略：
+
+     ![image-20250607110454969](images\README\image-20250607110454969.png)
+
+**特点**：
+
+- ✅ **优点**：计算效率高（省去策略评估的多次迭代）；
+- ❌ **缺点**：中间过程无显式策略，收敛前策略不可用。
+
+#### **三、核心区别与联系**
+
+| **维度**     | **策略迭代**                                  | **价值迭代**                   |
+| :----------- | :-------------------------------------------- | :----------------------------- |
+| **原理**     | 显式优化策略 π                                | 隐式优化值函数 V(s) → 导出策略 |
+| **流程**     | 评估+改进交替                                 | 直接更新 V(s)（合并两步）      |
+| **计算成本** | 高（需策略评估收敛）                          | 低（单次更新包含策略改进）     |
+| **收敛速度** | 策略收敛快（少轮次）                          | 值函数收敛慢（多轮次）         |
+| **适用性**   | 中小状态空间                                  | 大规模状态空间                 |
+| **本质关联** | 价值迭代是策略迭代的极限简化（策略评估仅1次） |                                |
 
 ### RAG
