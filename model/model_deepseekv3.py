@@ -174,25 +174,32 @@ class MLA(nn.Module):
     """
     def __init__(self, args: DeepSeekV3ModelArgs):
         super().__init__()
-        self.dim = args.dim
-        self.n_heads = args.n_heads
+        self.dim = args.dim # 768
+        self.n_heads = args.n_heads # 12
+
+        print(f"MLA: dim={self.dim}, n_heads={self.n_heads}")
 
         # 定义 query/key/value 维度
-        self.q_lora_rank = args.q_lora_rank
-        self.kv_lora_rank = args.kv_lora_rank
-        self.qk_nope_head_dim = args.qk_nope_head_dim
-        self.qk_rope_head_dim = args.qk_rope_head_dim
-        self.qk_head_dim = args.qk_nope_head_dim + args.qk_rope_head_dim
-        self.v_head_dim = args.v_head_dim
+        self.q_lora_rank = args.q_lora_rank #384
+        self.kv_lora_rank = args.kv_lora_rank # 256
+        self.qk_nope_head_dim = args.qk_nope_head_dim # 不做位置编码每个头的维度 64
+        self.qk_rope_head_dim = args.qk_rope_head_dim # 做位置编码每个头的维度 32
+        self.qk_head_dim = args.qk_nope_head_dim + args.qk_rope_head_dim # 最终执行注意力计算的 query 和 key 的每个头的维度 96
+        self.v_head_dim = args.v_head_dim # value 的每个头的维度 64
+
+        print(f"MLA: q_lora_rank={self.q_lora_rank}, kv_lora_rank={self.kv_lora_rank}, qk_nope_head_dim={self.qk_nope_head_dim}, qk_rope_head_dim={self.qk_rope_head_dim}, qk_head_dim={self.qk_head_dim}, v_head_dim={self.v_head_dim}")
 
         # 低秩压缩 query
-        self.wq_a = nn.Linear(self.dim, self.q_lora_rank, bias=False)  # 下投影: d -> d_c'
+        self.wq_a = nn.Linear(self.dim, self.q_lora_rank, bias=False)  # 下投影: d -> d_c' 768->384
         self.q_norm = RMSNorm(self.q_lora_rank)  # 下投影后对潜在向量进行一次 RMSNorm，原文中似乎没提到，但源码中有
+        # query 从384 -> 12 * 96 = 1152
         self.wq_b = nn.Linear(self.q_lora_rank, self.n_heads * self.qk_head_dim, bias=False)  # 同时进行上投影 + 解耦多头 query 投影: d_c' -> (d_h + d_h^R) * n_h
 
         # key / value 的维度变换
+        # 768 -> 256 + 32 = 288
         self.wkv_a = nn.Linear(self.dim, self.kv_lora_rank + self.qk_rope_head_dim, bias=False)  # 同时进行下投影 + 解耦共享 key 投影: d -> d_c + d_h^R
         self.kv_norm = RMSNorm(self.kv_lora_rank)  # 对潜在向量进行 RMSNorm
+        # 256 -> 12 * (64 + 64) = 1536
         self.wkv_b = nn.Linear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim), bias=False)  # 同时进行 key 和 value 的上投影: d_c -> (d_h + d_h) * n_h
 
         # 输出的维度变换: d_h * n_h -> d
@@ -221,37 +228,57 @@ class MLA(nn.Module):
         end_pos = start_pos + seqlen
 
         # -------------------------- query 部分 --------------------------
+        # query的处理主要是如下
+        # 1.先对Query先进行低秩压缩
+        # 2.对低秩压缩的进行升维同时生成rope，将2个矩阵运算合并成一个大的矩阵运算
+        # 3.分割2个升维矩阵q_nope和q_pe
+
         # 同步计算 q_t^C 和 q_t^R
+        # q: torch.Size([1, 512, 1152])
+        # 这边的wq_b的主要逻辑就是将升维+生成rope维度的2个矩阵运算融合成一个矩阵。
         q = self.wq_b(self.q_norm(self.wq_a(x)))  # (batch_size, seq_len, n_heads * qk_head_dim)
+        # q：[1, 512, 12, 96]
         q = q.view(bsz, seqlen, self.n_heads, self.qk_head_dim)  # 划分多头: (batch_size, seq_len, n_heads, qk_head_dim)
         # 将 q 拆分成不带位置编码的 q_nope 部分和带位置编码的 q_pe 部分
-        # q_nope: (batch_size, seq_len, n_heads, qk_nope_head_dim)
-        # q_pe: (batch_size, seq_len, n_heads, qk_rope_head_dim)
+        # q_nope: (batch_size, seq_len, n_heads, qk_nope_head_dim) [1, 512, 12, 64]
+        # q_pe: (batch_size, seq_len, n_heads, qk_rope_head_dim) [1, 512, 12, 32] 进行位置编码的部分
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
         q_pe = apply_rotary_emb(q_pe, freqs_cis)  # 对解耦部分应用旋转位置编码
 
         # ----------------------- key / value 部分 -----------------------
+        # key和value用同一个矩阵进行低秩压缩，并且还要做好key的rope的矩阵生成，这样是减少计算量 这边其实就是一个矩阵吸收的例子
+        # 这一步生成的kv的compressed_kv和key的rope矩阵在推理阶段是都要缓存的
+
         # 同步计算 k_t^C 和 k_t^R
+        # kv: torch.Size([1, 512, 288])
         kv = self.wkv_a(x)  # 同时进行低秩压缩和解耦 key 的变换 (batch_size, seq_len, kv_lora_rank + qk_rope_head_dim)
         # 将上述结果拆分成潜在向量 kv 部分和带位置编码的 k_pe 部分
-        # kv: (batch_size, seq_len, kv_lora_rank)
-        # k_pe: (batch_size, seq_len, qk_rope_head_dim)
+        # kv: (batch_size, seq_len, kv_lora_rank) [1, 512, 256]
+        # k_pe: (batch_size, seq_len, qk_rope_head_dim) [1, 512, 32]
         kv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
         k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)  # 先增加 head 维度 (batch_size, seq_len, 1, qk_rope_head_dim)，而后对解耦部分应用旋转位置编码
 
         # --------------------------- 矩阵吸收 ---------------------------
+        #
+        #  [1536, 256]
         wkv_b = self.wkv_b.weight  # weight 的形状为(out_features, in_features), 即(n_heads * (qk_nope_head_dim + v_head_dim), kv_lora_rank)
+        print(f"wkv_b: {wkv_b.shape}")
+        # [12, 128, 256]
         wkv_b = wkv_b.view(self.n_heads, -1, self.kv_lora_rank)  # (n_heads, qk_nope_head_dim + v_head_dim, kv_lora_rank)
-        # q_nope: (batch_size, seq_len, n_heads, qk_nope_head_dim)
+        print(f"view wkv_b: {wkv_b.shape}")
+        print(f"q_nope: {q_nope.shape}")
+        # q_nope: (batch_size, seq_len, n_heads, qk_nope_head_dim) [1, 512, 12, 64]
         # wkv_b 截取的形状为: (n_heads, qk_nope_head_dim, kv_lora_rank), 即每个头的权重形状是(qk_nope_head_dim, kv_lora_rank)
         # 新的 q_nope 计算结果为: (batch_size, seq_len, n_heads, kv_lora_rank)
+        # [1, 512, 12, 64] * [12, 128, 64] = [1, 512, 12, 64] * [1, 12, 128, 64] = [1, 512, 12, 256]
         q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])  # 吸收 wkv_b TODO:能否直接初始化吸收好的权重矩阵
-
+        print(f"after q_nope: {q_nope.shape}")
+        print(f"kv: {kv.shape}")
         # -------------------------- 注意力计算 --------------------------
         if self.training:  # 训练阶段不使用缓存
             kv = self.kv_norm(kv)
             k_pe = k_pe.squeeze(2)
-
+            # 这边计算的是
             scores = (torch.einsum("bshc,btc->bsht", q_nope, kv) + torch.einsum("bshr,btr->bsht", q_pe, k_pe)) * self.softmax_scale
 
         else:  # 推理阶段使用缓存
@@ -768,38 +795,38 @@ if __name__ == "__main__":
     attention_output = attention(x, start_pos=0, freqs_cis=freq_cis, mask=None)
     print(f"attention output size: {attention_output.size()}")
 
-    # Gate模块梯度测试
-    print(f"{'-'*10} test Gate {'-'*10}")
-    x = torch.randn(args.max_batch_size*args.max_seq_len, args.dim)  # (batch_size * seq_len, dim)
-    gate = Gate(args)
-    # 前向传播
-    weights, indices = gate(x)
-    loss = weights.sum()  # 假设损失函数是 gate 的输出求和
-    # 反向传播
-    loss.backward()
-    # 检查 bias 的梯度
-    if gate.use_noaux_tc:
-        print('grad of bias: \n', gate.bias.grad)
-    print('bias: \n', gate.bias)
-    print('grad of weight: \n', gate.weight.grad)
-
-    # MoE模块测试
-    print(f"{'-'*10} test MoE {'-'*10}")
-    x = torch.randn(1, args.max_seq_len, args.dim)  # (batch_size, seq_len, dim)
-    print(f"moe input size: {x.size()}")
-    moe = MoE(args)
-    moe_output, seq_aux_loss, global_counts = moe(x)  # (batch_size, seq_len, dim)
-    print(f"moe output size: {moe_output.size()}")
-    print(f"seq_aux_loss: {seq_aux_loss}")
-
-    # 全模型测试
-    print(f"{'-'*10} test Transformer {'-'*10}")
-    x = torch.randint(0, args.vocab_size, (1, args.max_seq_len))  # (batch_size, seq_len)
-    t = torch.randint(0, args.vocab_size, (1, args.max_seq_len))  # (batch_size, seq_len)
-    print(f"transformer input size: {x.size()}")
-    transformer = DeepSeekV3Model(args)
-    transformer_output = transformer(x, t)  # (batch_size, vocab_size)
-    print(f"transformer output size: {transformer_output[0].size()}")
-
-    print(f'model _name: {transformer.model_name}')
+    # # Gate模块梯度测试
+    # print(f"{'-'*10} test Gate {'-'*10}")
+    # x = torch.randn(args.max_batch_size*args.max_seq_len, args.dim)  # (batch_size * seq_len, dim)
+    # gate = Gate(args)
+    # # 前向传播
+    # weights, indices = gate(x)
+    # loss = weights.sum()  # 假设损失函数是 gate 的输出求和
+    # # 反向传播
+    # loss.backward()
+    # # 检查 bias 的梯度
+    # if gate.use_noaux_tc:
+    #     print('grad of bias: \n', gate.bias.grad)
+    # print('bias: \n', gate.bias)
+    # print('grad of weight: \n', gate.weight.grad)
+    #
+    # # MoE模块测试
+    # print(f"{'-'*10} test MoE {'-'*10}")
+    # x = torch.randn(1, args.max_seq_len, args.dim)  # (batch_size, seq_len, dim)
+    # print(f"moe input size: {x.size()}")
+    # moe = MoE(args)
+    # moe_output, seq_aux_loss, global_counts = moe(x)  # (batch_size, seq_len, dim)
+    # print(f"moe output size: {moe_output.size()}")
+    # print(f"seq_aux_loss: {seq_aux_loss}")
+    #
+    # # 全模型测试
+    # print(f"{'-'*10} test Transformer {'-'*10}")
+    # x = torch.randint(0, args.vocab_size, (1, args.max_seq_len))  # (batch_size, seq_len)
+    # t = torch.randint(0, args.vocab_size, (1, args.max_seq_len))  # (batch_size, seq_len)
+    # print(f"transformer input size: {x.size()}")
+    # transformer = DeepSeekV3Model(args)
+    # transformer_output = transformer(x, t)  # (batch_size, vocab_size)
+    # print(f"transformer output size: {transformer_output[0].size()}")
+    #
+    # print(f'model _name: {transformer.model_name}')
 

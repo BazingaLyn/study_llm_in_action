@@ -8,6 +8,7 @@ def analyze_jsonl_stats(filepath):
     total_length = 0
     count = 0
     count_over_512 = 0
+    moss_count = 0
 
     with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
@@ -15,6 +16,10 @@ def analyze_jsonl_stats(filepath):
             # 假设每个JSON对象中有一个'text'字段包含文本内容
             text = data.get('text', '')
             length = len(text)
+
+            if "MOSS" in text:
+                print(text)
+                moss_count += 1
 
             if length > 512:
                 count_over_512 += 1
@@ -34,12 +39,13 @@ def analyze_jsonl_stats(filepath):
         'min_length': min_length,
         'avg_length': avg_length,
         'total_samples': count,
-        'count_over_512': count_over_512
+        'count_over_512': count_over_512,
+        'moss_count': moss_count
     }
 
 
 if __name__ == "__main__":
-    jsonl_file = "../dataset/pretrain_hq.jsonl"
+    jsonl_file = "../dataset/pretrain_hq_v2.jsonl"
     stats = analyze_jsonl_stats(jsonl_file)
 
     if stats:
@@ -49,5 +55,6 @@ if __name__ == "__main__":
         print(f"平均字符长度: {stats['avg_length']:.2f}")
         print(f"总样本数: {stats['total_samples']}")
         print(f"超过512长度的个数: {stats['count_over_512']}")
+        print(f"contain moss的个数: {stats['moss_count']}")
     else:
         print("文件为空或没有有效数据")
