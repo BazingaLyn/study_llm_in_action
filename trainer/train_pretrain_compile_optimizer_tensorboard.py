@@ -19,6 +19,8 @@ from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
 from dataset.lm_dataset import PretrainDataset
 import inspect
 from typing import Tuple
+# 添加 TensorBoard 导入
+from torch.utils.tensorboard import SummaryWriter
 
 warnings.filterwarnings('ignore')
 
@@ -53,21 +55,25 @@ def get_lr_with_warmup(it, args):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff 是一个从 0 到 1 之间变化的系数，控制学习率的衰减
     return min_lr + coeff * (max_lr - min_lr)
 
-def train_epoch(epoch, wandb):
+def train_epoch(epoch, writer):
     loss_fct = nn.CrossEntropyLoss(reduction='none')
     start_time = time.time()
 
-    # 新增：初始化token计数器和处理开始时间
+    # 初始化token计数器和处理开始时间
     total_tokens = 0
     tokens_start_time = time.time()
+    
+    # 计算全局步数的基准值
+    global_step_base = epoch * iter_per_epoch
 
     for step, (X, Y, loss_mask) in enumerate(train_loader):
         X = X.to(args.device)
         Y = Y.to(args.device)
         loss_mask = loss_mask.to(args.device)
 
-        #lr = get_lr(epoch * iter_per_epoch + step, args.epochs * iter_per_epoch, args.learning_rate)
         it = epoch * iter_per_epoch + step + 1  # 当前全局迭代次数
+        global_step = global_step_base + step  # 用于 TensorBoard 记录的全局步数
+        
         lr = get_lr_with_warmup(it, args)  # 调用新的学习率函数
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
@@ -93,22 +99,22 @@ def train_epoch(epoch, wandb):
 
             optimizer.zero_grad(set_to_none=True)
 
-        # 新增：计算当前批次的token数量
+        # 计算当前批次的token数量
         batch_tokens = loss_mask.sum().item()
 
-        # 新增：在分布式环境下汇总所有进程的token数
+        # 在分布式环境下汇总所有进程的token数
         if ddp:
             batch_tokens_tensor = torch.tensor(batch_tokens, dtype=torch.float, device=args.device)
             dist.all_reduce(batch_tokens_tensor, op=dist.ReduceOp.SUM)
             batch_tokens = batch_tokens_tensor.item()
 
-        # 新增：累加token计数
+        # 累加token计数
         total_tokens += batch_tokens
 
         if step % args.log_interval == 0:
             spend_time = time.time() - start_time
 
-            # 新增：计算每秒处理的token数
+            # 计算每秒处理的token数
             elapsed_time = time.time() - tokens_start_time
             tokens_per_second = total_tokens / elapsed_time if elapsed_time > 0 else 0
 
@@ -123,11 +129,12 @@ def train_epoch(epoch, wandb):
                     spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60,
                     tokens_per_second))
 
-            if (wandb is not None) and (not ddp or dist.get_rank() == 0):
-                wandb.log({"loss": loss.item() * args.accumulation_steps,
-                           "lr": optimizer.param_groups[-1]['lr'],
-                           "epoch_Time": spend_time / (step + 1) * iter_per_epoch // 60 - spend_time // 60,
-                           "tokens_per_sec": tokens_per_second})
+            # 使用 TensorBoard 记录训练指标
+            if (writer is not None) and (not ddp or dist.get_rank() == 0):
+                writer.add_scalar("train/loss", loss.item() * args.accumulation_steps, global_step)
+                writer.add_scalar("train/lr", optimizer.param_groups[-1]['lr'], global_step)
+                writer.add_scalar("train/tokens_per_sec", tokens_per_second, global_step)
+                
             tokens_start_time = time.time()
             total_tokens = 0
 
@@ -145,11 +152,15 @@ def train_epoch(epoch, wandb):
             torch.save(state_dict, ckp)
             model.train()
 
-    # 新增：打印整个epoch的平均token处理速度
+    # 打印整个epoch的平均token处理速度
     if not ddp or dist.get_rank() == 0:
         total_elapsed_time = time.time() - tokens_start_time
         avg_tokens_per_second = total_tokens / total_elapsed_time if total_elapsed_time > 0 else 0
         print(f"Epoch {epoch + 1} average tokens/sec: {avg_tokens_per_second:.1f}")
+        
+        # 记录每个epoch的平均token处理速度
+        if writer is not None:
+            writer.add_scalar("train/epoch_avg_tokens_per_sec", avg_tokens_per_second, epoch)
 
 
 def init_model(lm_config):
@@ -230,8 +241,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=5e-4)
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", type=str, default="bfloat16")
-    parser.add_argument("--use_wandb", action="store_true")
-    parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain")
+    # 替换 wandb 相关参数为 tensorboard 参数
+    parser.add_argument("--log_dir", type=str, default="../logs")
     parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--ddp", action="store_true")
     parser.add_argument("--accumulation_steps", type=int, default=8)
@@ -262,11 +273,16 @@ if __name__ == "__main__":
     args.save_dir = os.path.join(args.out_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
+    
+    # 创建 TensorBoard 日志目录
+    os.makedirs(args.log_dir, exist_ok=True)
+    
     tokens_per_iter = args.batch_size * args.max_seq_len
     device_type = "cuda" if "cuda" in args.device else "cpu"
 
-    args.wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
-
+    # 为 TensorBoard 创建一个唯一的运行名称
+    run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LR-{args.learning_rate}"
+    
     ctx = nullcontext() if device_type == "cpu" else torch.amp.autocast('cuda')
 
     ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -284,12 +300,13 @@ if __name__ == "__main__":
         # 同时设置 CUDA 的随机种子
         torch.cuda.manual_seed(base_seed + rank)
 
-    if args.use_wandb and (not ddp or ddp_local_rank == 0):
-        import wandb
-
-        wandb.init(project=args.wandb_project, name=args.wandb_run_name)
-    else:
-        wandb = None
+    # 初始化 TensorBoard writer
+    writer = None
+    if not ddp or ddp_local_rank == 0:
+        # 为每次运行创建一个唯一的日志目录
+        tb_log_dir = os.path.join(args.log_dir, run_name)
+        writer = SummaryWriter(log_dir=tb_log_dir)
+        Logger(f"TensorBoard logs will be saved to {tb_log_dir}")
 
     model, tokenizer = init_model(lm_config)
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
@@ -308,7 +325,6 @@ if __name__ == "__main__":
     scaler = torch.amp.GradScaler('cuda',enabled=(args.dtype in ['float16', 'bfloat16']))
 
     betas: Tuple[float, float] = (0.9, 0.95)
-    # optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     optimizer = configure_optimizer(
         model,
         weight_decay=args.weight_decay,
@@ -331,6 +347,28 @@ if __name__ == "__main__":
         assert args.lr_decay_iters > args.warmup_iters, "衰减迭代次数必须大于预热迭代次数"
         assert args.lr_decay_iters <= total_iters, "衰减迭代次数必须小于总迭代次数"
         
+    # 记录一些超参数到 TensorBoard
+    if writer is not None:
+        # 添加超参数
+        writer.add_text("hyperparameters/batch_size", str(args.batch_size))
+        writer.add_text("hyperparameters/learning_rate", str(args.learning_rate))
+        writer.add_text("hyperparameters/weight_decay", str(args.weight_decay))
+        writer.add_text("hyperparameters/max_lr", str(args.max_lr))
+        writer.add_text("hyperparameters/min_lr", str(args.min_lr))
+        writer.add_text("hyperparameters/warmup_iters", str(args.warmup_iters))
+        writer.add_text("hyperparameters/lr_decay_iters", str(lr_decay_iters))
+        writer.add_text("hyperparameters/hidden_size", str(args.hidden_size))
+        writer.add_text("hyperparameters/num_hidden_layers", str(args.num_hidden_layers))
+        writer.add_text("hyperparameters/max_seq_len", str(args.max_seq_len))
+        writer.add_text("hyperparameters/use_moe", str(args.use_moe))
 
     for epoch in range(args.epochs):
-        train_epoch(epoch, wandb)
+        # 如果使用DDP，每个epoch重新设置sampler
+        if ddp:
+            train_sampler.set_epoch(epoch)
+            
+        train_epoch(epoch, writer)
+    
+    # 关闭 TensorBoard writer
+    if writer is not None:
+        writer.close()
