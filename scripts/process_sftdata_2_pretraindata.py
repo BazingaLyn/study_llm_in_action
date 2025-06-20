@@ -2,6 +2,7 @@ import json
 import os
 from tqdm import tqdm  # 新增导入
 import re
+import pandas as pd
 
 def process_sftdata_2_pretrain_data(input_path, output_path):
     # Ensure output directory exists
@@ -76,11 +77,59 @@ def process_sftdata_2_pretrain_data(input_path, output_path):
         json.dump(extend_new_data2, outfile, ensure_ascii=False)
         outfile.write('\n')
 
+def merge(input1, input2):
+    """
+    将CSV文件中的数据追加到JSONL文件中，并显示详细进度条
+    """
+    # 确保输入文件存在
+    if not os.path.exists(input1):
+        raise FileNotFoundError(f"JSONL文件 {input1} 不存在")
+    
+    if not os.path.exists(input2):
+        raise FileNotFoundError(f"CSV文件 {input2} 不存在")
+    
+    # 读取CSV文件
+    csv_data = pd.read_csv(input2)
+    total_rows = len(csv_data)
+    
+    count = 0
+    filtered = 0
+    
+    # 创建进度条
+    pbar = tqdm(total=total_rows, desc="处理进度")
+    
+    # 直接以追加模式打开JSONL文件
+    with open(input1, 'a', encoding='utf-8') as f:
+        for _, row in csv_data.iterrows():
+            # 获取文本并检查长度
+            text = row["text"]
+            is_invalid_length = len(text) > 512 or len(text) < 200
+            
+            if not is_invalid_length:
+                newdata = {'text': text}
+                json.dump(newdata, f, ensure_ascii=False)
+                f.write('\n')
+                count += 1
+            else:
+                filtered += 1
+            
+            # 更新进度条和描述
+            pbar.update(1)
+            pbar.set_postfix({"有效": count, "过滤": filtered})
+    
+    pbar.close()
+    print(f"成功将 {count}/{total_rows} 行数据从 {input2} 追加到 {input1}")
+    print(f"过滤掉了 {filtered} 行不符合长度要求的数据")
+
 
 if __name__ == '__main__':
     # ... 其余代码保持不变 ...
-    input_file = "D:\workspace_2025\study_llm_in_action\dataset\sft_data_zh.jsonl"
+    # input_file = "D:\workspace_2025\study_llm_in_action\dataset\sft_data_zh.jsonl"
     output_file = "../dataset/pretrain_hq_v5.jsonl"
 
-    process_sftdata_2_pretrain_data(input_file, output_file)
-    print(f"处理已经完成，新文件已保存至: {output_file}")
+    # process_sftdata_2_pretrain_data(input_file, output_file)
+    # print(f"处理已经完成，新文件已保存至: {output_file}")
+
+    other_file = "../dataset/pretrain_data.csv"
+
+    merge(output_file, other_file)

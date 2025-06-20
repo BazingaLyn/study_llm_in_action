@@ -13,6 +13,73 @@ import ast
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+
+class BinaryPretrainDataset(Dataset):
+    def __init__(self, data_dir, tokenizer=None, max_length=512):
+        """
+        从预处理好的二进制文件加载数据集
+        
+        参数:
+        data_dir: 包含预处理二进制文件的目录
+        tokenizer: 分词器（仅用于获取pad_token_id）
+        max_length: 最大序列长度
+        """
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.data_dir = data_dir
+        
+        # 加载索引文件
+        index_path = os.path.join(data_dir, "index.json")
+        with open(index_path, 'r', encoding='utf-8') as f:
+            self.index_info = json.load(f)
+        
+        self.num_files = self.index_info["num_files"]
+        self.samples_per_file = self.index_info["samples_per_file"]
+        self.total_samples = self.index_info["total_samples"]
+        
+        # 缓存当前加载的文件
+        self.current_file_idx = -1
+        self.current_samples = None
+    
+    def __len__(self):
+        return self.total_samples
+    
+    def load_file(self, file_idx):
+        """加载指定索引的二进制文件"""
+        file_path = os.path.join(self.data_dir, f"pretrain_data_{file_idx}.pt")
+        return torch.load(file_path)
+    
+    def __getitem__(self, index):
+        # 计算样本所在的文件索引和文件内索引
+        file_idx = index // self.samples_per_file
+        sample_idx = index % self.samples_per_file
+        
+        # 如果需要加载新文件
+        if file_idx != self.current_file_idx:
+            self.current_samples = self.load_file(file_idx)
+            self.current_file_idx = file_idx
+        
+        # 获取样本
+        sample = self.current_samples[sample_idx]
+        input_ids = sample['input_ids']
+        
+        # 创建损失掩码
+        if self.tokenizer:
+            pad_token_id = self.tokenizer.pad_token_id
+        else:
+            # 如果没有提供tokenizer，假设pad_token_id为0
+            pad_token_id = 0
+            
+        loss_mask = (input_ids != pad_token_id)
+        
+        # 准备输入和目标
+        X = input_ids[:-1]
+        Y = input_ids[1:]
+        loss_mask = loss_mask[1:].long()
+        
+        return X, Y, loss_mask
+
 class PretrainDataset(Dataset):
     def __init__(self, data_path, tokenizer, max_length=512):
         super().__init__()
