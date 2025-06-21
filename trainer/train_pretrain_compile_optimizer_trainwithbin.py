@@ -25,12 +25,15 @@ warnings.filterwarnings('ignore')
 
 def create_dataloader(data_dir, tokenizer, batch_size=16, shuffle=True, num_workers=4):
     dataset = BinaryPretrainDataset(data_dir, tokenizer)
+    train_sampler = DistributedSampler(dataset) if ddp else None
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=False,
+        sampler=train_sampler
     )
 
 def Logger(content):
@@ -304,21 +307,22 @@ if __name__ == "__main__":
     model, tokenizer = init_model(lm_config)
     # train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
 
-    train_ds = create_dataloader(
+    train_loader = create_dataloader(
         data_dir="../dataset/bin/",
         tokenizer=tokenizer,
         batch_size=args.batch_size,
+        num_workers=args.num_workers
     )
-    train_sampler = DistributedSampler(train_ds) if ddp else None
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        pin_memory=True,
-        drop_last=False,
-        shuffle=False,
-        num_workers=args.num_workers,
-        sampler=train_sampler
-    )
+
+    # train_loader = DataLoader(
+    #     train_ds,
+    #     batch_size=args.batch_size,
+    #     pin_memory=True,
+    #     drop_last=False,
+    #     shuffle=False,
+    #     num_workers=args.num_workers,
+    #     sampler=train_sampler
+    # )
 
     #使用bfloat16混合精度进行训练
     scaler = torch.amp.GradScaler('cuda',enabled=(args.dtype in ['float16', 'bfloat16']))
