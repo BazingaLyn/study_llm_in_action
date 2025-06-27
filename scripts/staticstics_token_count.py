@@ -6,7 +6,7 @@ from tqdm import tqdm
 tokenizer = AutoTokenizer.from_pretrained('../model/')
 
 # 读取JSONL文件
-file_path = '../dataset/pretrain_hq_v5.jsonl'
+file_path = '../dataset/pretrain_hq_v7.jsonl'
 
 # 统计变量
 total_tokens = 0
@@ -30,7 +30,7 @@ with open(file_path, 'r', encoding='utf-8') as file:
         total_tokens += num_tokens
 
 # 打印统计结果
-tokens_in_millions = total_tokens / 1_000_000
+tokens_in_millions = total_tokens / 1_000_000 / 1000.0
 print(f"总样本数: {total_samples}")
-print(f"总Token数: {total_tokens:,} ({tokens_in_millions:.2f}M)")
+print(f"总Token数: {total_tokens:,} ({tokens_in_millions:.2f}B)")
 print(f"平均每个样本的Token数: {total_tokens / total_samples:.2f}")

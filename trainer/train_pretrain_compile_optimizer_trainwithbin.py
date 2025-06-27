@@ -33,7 +33,8 @@ def create_dataloader(data_dir, tokenizer, batch_size=16, shuffle=True, num_work
         num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
-        sampler=train_sampler
+        sampler=train_sampler,
+        prefetch_factor=2,
     )
 
 def Logger(content):
@@ -171,7 +172,7 @@ def init_model(lm_config):
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     # 只对内部的MiniMindModel进行编译，而不是整个MiniMindForCausalLM
     if args.use_torch_compile and hasattr(torch, 'compile') and torch.__version__ >= '2.0.0':
-        Logger("仅对MiniMindModel进行torch.compile加速")
+        Logger(f"仅对MiniMindModel进行torch.compile加速 {args.use_torch_compile}")
         model.model = torch.compile(model.model)
     return model, tokenizer
 
@@ -269,6 +270,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--data_path", type=str, default="../dataset/pretrain_hq.jsonl")
     args = parser.parse_args()
+
+
 
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers,
                                use_moe=args.use_moe, flash_attn=args.use_flash_attn)
