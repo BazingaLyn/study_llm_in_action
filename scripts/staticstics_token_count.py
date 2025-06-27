@@ -12,6 +12,7 @@ file_path = '../dataset/pretrain_hq_v7.jsonl'
 total_tokens = 0
 total_samples = 0
 
+
 # 处理JSONL文件
 with open(file_path, 'r', encoding='utf-8') as file:
     # 使用tqdm显示进度
