@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 
 
 def init_model(args):
-    tokenizer = AutoTokenizer.from_pretrained('./model/')
+    tokenizer = AutoTokenizer.from_pretrained('../model/bazinga/')
     if args.load == 0:
         moe_path = '_moe' if args.use_moe else ''
         modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf', 3: 'reason', 4: 'grpo'}

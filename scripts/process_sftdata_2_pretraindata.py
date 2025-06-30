@@ -37,7 +37,7 @@ def should_exclude_text(text, min_length=200, max_length=512):
     # 首次预训练阶段需要排除在sft中出现的文本
     # 首次预训练阶段也需要排除编程相关的相对比较复杂的文本
     exclude_keywords = [
-        '---', "感谢你", "期待您", "指令:", "输入:", 
+        '---','____', "感谢你", "期待您", "指令:", "输入:",
         "【文章内容】", "【结束】", "轮对话】", 
         "[文章](", "[您需要的", "请继续撰写", "请稍等片刻", "手机号码", "电话号码", "内容省略", "Python", "python", "代码", "代码块", "```",
         "java","Java","JAVA","C++","c++","C","c","C#","c#","C#","JavaScript","javascript","JavaScript","TypeScript","typescript","TypeScript","给你两个角色信息如下","角色信息如下","完成一段对话",

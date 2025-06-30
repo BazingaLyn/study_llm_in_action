@@ -61,6 +61,11 @@ def train_epoch(epoch, wandb):
     total_tokens = 0
     tokens_start_time = time.time()
 
+    # 新增：创建或获取全局的best_losses列表
+    global best_losses
+    if 'best_losses' not in globals():
+        best_losses = []  # 列表元素格式: (loss_value, epoch, step, checkpoint_path)
+
     for step, (X, Y, loss_mask) in enumerate(train_loader):
         X = X.to(args.device)
         Y = Y.to(args.device)
@@ -143,6 +148,41 @@ def train_epoch(epoch, wandb):
 
             state_dict = {k: v.half() for k, v in state_dict.items()}  # 半精度保存
             torch.save(state_dict, ckp)
+
+            # 获取当前loss值
+            current_loss = loss.item() * args.accumulation_steps
+            
+            # 检查是否为前3低的loss
+            if len(best_losses) < 3:
+                # 不足3个，直接添加
+                best_ckp = f'{args.save_dir}/best_loss_{len(best_losses)+1}_epoch{epoch}_step{step}_loss{current_loss:.4f}.pth'
+                torch.save(state_dict, best_ckp)
+                best_losses.append((current_loss, epoch, step, best_ckp))
+                # 按loss值排序
+                best_losses.sort(key=lambda x: x[0])
+                Logger(f"Saved new best loss checkpoint (rank {len(best_losses)}): {best_ckp}")
+            elif current_loss < best_losses[-1][0]:
+                # 当前loss比最大的best loss小，替换它
+                old_ckp = best_losses[-1][3]
+                if os.path.exists(old_ckp):
+                    os.remove(old_ckp)  # 删除旧的checkpoint
+                
+                best_ckp = f'{args.save_dir}/best_loss_{3}_epoch{epoch}_step{step}_loss{current_loss:.4f}.pth'
+                torch.save(state_dict, best_ckp)
+                
+                # 更新列表并重新排序
+                best_losses[-1] = (current_loss, epoch, step, best_ckp)
+                best_losses.sort(key=lambda x: x[0])
+                
+                Logger(f"Updated best loss checkpoint: {best_ckp}")
+                
+                # 重命名文件以匹配它们的新排名
+                for i, (loss_val, ep, st, path) in enumerate(best_losses):
+                    new_path = f'{args.save_dir}/best_loss_{i+1}_epoch{ep}_step{st}_loss{loss_val:.4f}.pth'
+                    if path != new_path:
+                        os.rename(path, new_path)
+                        best_losses[i] = (loss_val, ep, st, new_path)
+                        Logger(f"Renamed checkpoint to: {new_path}")
             model.train()
 
     # 新增：打印整个epoch的平均token处理速度
@@ -153,7 +193,7 @@ def train_epoch(epoch, wandb):
 
 
 def init_model(lm_config):
-    tokenizer = AutoTokenizer.from_pretrained('../model/')
+    tokenizer = AutoTokenizer.from_pretrained('../model/bazinga/')
     model = MiniMindForCausalLM(lm_config).to(args.device)
     Logger(f'LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万')
     # 只对内部的MiniMindModel进行编译，而不是整个MiniMindForCausalLM
