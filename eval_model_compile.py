@@ -8,7 +8,6 @@ from model.model_lora import *
 
 warnings.filterwarnings('ignore')
 
-
 def init_model(args):
     tokenizer = AutoTokenizer.from_pretrained('../model/bazinga/')
     if args.load == 0:
